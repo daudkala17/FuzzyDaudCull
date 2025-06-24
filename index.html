@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sistem Fuzzy Seleksi Karyawan</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f4f4f4; padding: 20px; }
+        h2 { color: #333; }
+        table { border-collapse: collapse; width: 100%; background: #fff; margin-bottom: 30px; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+        th { background: #4CAF50; color: white; }
+        tr:nth-child(even) { background: #f9f9f9; }
+        form { background: #fff; padding: 20px; border: 1px solid #ccc; margin-bottom: 30px; }
+        input[type="text"], input[type="number"] { padding: 6px; width: 200px; margin-bottom: 10px; }
+        input[type="submit"] { background: #4CAF50; color: white; border: none; padding: 10px 15px; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<h2>Form Input Seleksi</h2>
+<form id="selectionForm">
+    Nama: <input type="text" id="nama" required><br>
+    Tes Tulis: <input type="number" id="tulis" required><br>
+    Tes Keterampilan: <input type="number" id="keterampilan" required><br>
+    Wawancara: <input type="number" id="wawancara" required><br>
+    Tes Kesehatan: <input type="number" id="kesehatan" required><br>
+    <input type="submit" value="Proses">
+</form>
+
+<h2>Tabel Hasil Ranking dan Korelasi Spearman</h2>
+<table id="rankingTable">
+<tr>
+    <th>Nama</th><th>Pakar</th><th>Sistem</th><th>Rank Pakar</th><th>Rank Sistem</th><th>d</th><th>d²</th>
+</tr>
+</table>
+<p><strong>∑d² = <span id="sumD2">0</span></strong></p>
+<p><strong>Spearman ρ = <span id="spearmanCorr">0</span></strong></p>
+
+<h2>Riwayat Input Data</h2>
+<table id="historyTable">
+<tr>
+    <th>Nama</th><th>Tulis</th><th>Keterampilan</th><th>Wawancara</th><th>Kesehatan</th><th>Pakar</th><th>Sistem</th><th>Tanggal</th>
+</tr>
+</table>
+
+<script>
+// Simulasi LowDB dengan localStorage
+class LowDB {
+    constructor(filename) {
+        this.filename = filename;
+        this.data = this.read();
+    }
+    
+    read() {
+        const stored = localStorage.getItem(this.filename);
+        return stored ? JSON.parse(stored) : { fuzzifikasi: [] };
+    }
+    
+    write() {
+        localStorage.setItem(this.filename, JSON.stringify(this.data));
+    }
+    
+    get(table) {
+        return this.data[table] || [];
+    }
+    
+    push(table, item) {
+        if (!this.data[table]) this.data[table] = [];
+        const id = this.data[table].length > 0 ? 
+            Math.max(...this.data[table].map(x => x.id)) + 1 : 2048;
+        item.id = id;
+        item.tanggal_input = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        this.data[table].push(item);
+        this.write();
+        return item;
+    }
+}
+
+const db = new LowDB('fuzzy_db');
+
+// Fungsi Fuzzifikasi - persis seperti di PHP
+function fuzzy_tulis(input) {
+    return {
+        'lulus': Math.max(0, Math.min(1, (input - 25) / 50)),
+        'tidak_lulus': Math.max(0, Math.min(1, (75 - input) / 50))
+    };
+}
+
+function fuzzy_keterampilan(input) {
+    return fuzzy_tulis(input);
+}
+
+function fuzzy_wawancara(input) {
+    return {
+        'lulus': Math.max(0, Math.min(1, (input - 55) / 20)),
+        'tidak_lulus': Math.max(0, Math.min(1, (75 - input) / 20))
+    };
+}
+
+function fuzzy_kesehatan(input) {
+    return {
+        'lulus': Math.max(0, Math.min(1, (input - 50) / 20)),
+        'tidak_lulus': Math.max(0, Math.min(1, (70 - input) / 20))
+    };
+}
+
+// Fungsi ranking - persis seperti di PHP
+function get_rank_average(array, key) {
+    const values = array.map((item, index) => ({ value: item[key], index }));
+    values.sort((a, b) => b.value - a.value);
+    
+    const ranks = new Array(array.length);
+    let rank = 1;
+    let prev_value = null;
+    let same_rank = [];
+    
+    for (let i = 0; i < values.length; i++) {
+        const { value, index } = values[i];
+        
+        if (value === prev_value) {
+            same_rank.push(index);
+        } else {
+            if (same_rank.length > 0) {
+                const start = rank - same_rank.length;
+                const end = rank - 1;
+                const avg = Array.from({ length: same_rank.length }, (_, i) => start + i)
+                    .reduce((sum, r) => sum + r, 0) / same_rank.length;
+                same_rank.forEach(idx => ranks[idx] = avg);
+                same_rank = [];
+            }
+            same_rank.push(index);
+            prev_value = value;
+        }
+        rank++;
+    }
+    
+    if (same_rank.length > 0) {
+        const start = rank - same_rank.length;
+        const avg = Array.from({ length: same_rank.length }, (_, i) => start + i)
+            .reduce((sum, r) => sum + r, 0) / same_rank.length;
+        same_rank.forEach(idx => ranks[idx] = avg);
+    }
+    
+    return ranks;
+}
+
+// Fungsi perhitungan fuzzy dan sistem
+function calculateFuzzySystem(tulis, keterampilan, wawancara, kesehatan) {
+    // Hitung nilai pakar seperti di PHP
+    const alur1 = (tulis + keterampilan) / 2;
+    const nilai_pakar = Math.round((wawancara + kesehatan + alur1) / 3);
+    
+    // Hitung fuzzifikasi
+    const fuzzy_tulis_val = fuzzy_tulis(tulis);
+    const fuzzy_keterampilan_val = fuzzy_keterampilan(keterampilan);
+    const fuzzy_wawancara_val = fuzzy_wawancara(wawancara);
+    const fuzzy_kesehatan_val = fuzzy_kesehatan(kesehatan);
+    
+    // Aturan fuzzy - persis seperti di PHP
+    const rules = [
+        [['lulus','lulus','lulus','lulus'], 'lulus'],
+        [['lulus','lulus','lulus','tidak_lulus'], 'tidak_lulus'],
+        [['lulus','lulus','tidak_lulus','lulus'], 'tidak_lulus'],
+        [['lulus','lulus','tidak_lulus','tidak_lulus'], 'tidak_lulus'],
+        [['lulus','tidak_lulus','lulus','lulus'], 'lulus'],
+        [['lulus','tidak_lulus','lulus','tidak_lulus'], 'tidak_lulus'],
+        [['lulus','tidak_lulus','tidak_lulus','lulus'], 'tidak_lulus'],
+        [['lulus','tidak_lulus','tidak_lulus','tidak_lulus'], 'tidak_lulus'],
+        [['tidak_lulus','lulus','lulus','lulus'], 'lulus'],
+        [['tidak_lulus','lulus','lulus','tidak_lulus'], 'tidak_lulus'],
+        [['tidak_lulus','lulus','tidak_lulus','lulus'], 'tidak_lulus'],
+        [['tidak_lulus','lulus','tidak_lulus','tidak_lulus'], 'tidak_lulus'],
+        [['tidak_lulus','tidak_lulus','lulus','lulus'], 'lulus'],
+        [['tidak_lulus','tidak_lulus','lulus','tidak_lulus'], 'tidak_lulus'],
+        [['tidak_lulus','tidak_lulus','tidak_lulus','lulus'], 'tidak_lulus'],
+        [['tidak_lulus','tidak_lulus','tidak_lulus','tidak_lulus'], 'tidak_lulus']
+    ];
+    
+    let sum_alpha = 0;
+    let sum_alpha_z = 0;
+    
+    rules.forEach(([conditions, output]) => {
+        const alpha = Math.min(
+            fuzzy_tulis_val[conditions[0]],
+            fuzzy_keterampilan_val[conditions[1]],
+            fuzzy_wawancara_val[conditions[2]],
+            fuzzy_kesehatan_val[conditions[3]]
+        );
+        const z = output === 'lulus' ? (alpha * 50 + 25) : (75 - alpha * 50);
+        sum_alpha += alpha;
+        sum_alpha_z += alpha * z;
+    });
+    
+    const nilai_sistem = Math.round(sum_alpha === 0 ? 0 : sum_alpha_z / sum_alpha);
+    
+    return { nilai_pakar, nilai_sistem };
+}
+
+// Fungsi untuk memperbarui tampilan
+function updateDisplay() {
+    const data = db.get('fuzzifikasi');
+    
+    if (data.length === 0) {
+        document.getElementById('rankingTable').innerHTML = `
+            <tr><th>Nama</th><th>Pakar</th><th>Sistem</th><th>Rank Pakar</th><th>Rank Sistem</th><th>d</th><th>d²</th></tr>
+        `;
+        document.getElementById('historyTable').innerHTML = `
+            <tr><th>Nama</th><th>Tulis</th><th>Keterampilan</th><th>Wawancara</th><th>Kesehatan</th><th>Pakar</th><th>Sistem</th><th>Tanggal</th></tr>
+        `;
+        document.getElementById('sumD2').textContent = '0';
+        document.getElementById('spearmanCorr').textContent = '0';
+        return;
+    }
+    
+    // Hitung ranking
+    const rank_pakar = get_rank_average(data, 'nilai_pakar');
+    const rank_sistem = get_rank_average(data, 'hasil_sistem');
+    
+    // Hitung d dan d²
+    data.forEach((row, i) => {
+        row.rank_pakar = rank_pakar[i];
+        row.rank_sistem = rank_sistem[i];
+        row.di = row.rank_pakar - row.rank_sistem;
+        row.di2 = Math.pow(row.di, 2);
+    });
+    
+    // Hitung Spearman
+    const jumlah_data = data.length;
+    const sum_d2 = data.reduce((sum, row) => sum + row.di2, 0);
+    const r1 = 6 * sum_d2;
+    const r2 = jumlah_data * (Math.pow(jumlah_data, 2) - 1);
+    const spearman = r2 === 0 ? 0 : 1 - (r1 / r2);
+    
+    // Update tabel ranking
+    let rankingHTML = `
+        <tr><th>Nama</th><th>Pakar</th><th>Sistem</th><th>Rank Pakar</th><th>Rank Sistem</th><th>d</th><th>d²</th></tr>
+    `;
+    data.forEach(d => {
+        rankingHTML += `
+            <tr>
+                <td>${d.nama}</td>
+                <td>${Math.round(d.nilai_pakar * 100) / 100}</td>
+                <td>${Math.round(d.hasil_sistem * 100) / 100}</td>
+                <td>${d.rank_pakar}</td>
+                <td>${d.rank_sistem}</td>
+                <td>${d.di}</td>
+                <td>${d.di2}</td>
+            </tr>
+        `;
+    });
+    document.getElementById('rankingTable').innerHTML = rankingHTML;
+    
+    // Update tabel history
+    let historyHTML = `
+        <tr><th>Nama</th><th>Tulis</th><th>Keterampilan</th><th>Wawancara</th><th>Kesehatan</th><th>Pakar</th><th>Sistem</th><th>Tanggal</th></tr>
+    `;
+    data.forEach(d => {
+        historyHTML += `
+            <tr>
+                <td>${d.nama}</td>
+                <td>${d.test_tulis}</td>
+                <td>${d.test_keterampilan}</td>
+                <td>${d.wawancara}</td>
+                <td>${d.test_kesehatan}</td>
+                <td>${d.nilai_pakar}</td>
+                <td>${d.hasil_sistem}</td>
+                <td>${d.tanggal_input}</td>
+            </tr>
+        `;
+    });
+    document.getElementById('historyTable').innerHTML = historyHTML;
+    
+    // Update statistik
+    document.getElementById('sumD2').textContent = sum_d2;
+    document.getElementById('spearmanCorr').textContent = Math.round(spearman * 10000) / 10000;
+}
+
+// Event handler untuk form
+document.getElementById('selectionForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const nama = document.getElementById('nama').value;
+    const tulis = parseFloat(document.getElementById('tulis').value);
+    const keterampilan = parseFloat(document.getElementById('keterampilan').value);
+    const wawancara = parseFloat(document.getElementById('wawancara').value);
+    const kesehatan = parseFloat(document.getElementById('kesehatan').value);
+    
+    const { nilai_pakar, nilai_sistem } = calculateFuzzySystem(tulis, keterampilan, wawancara, kesehatan);
+    
+    // Simpan ke database
+    db.push('fuzzifikasi', {
+        nama: nama,
+        test_tulis: tulis,
+        test_keterampilan: keterampilan,
+        wawancara: wawancara,
+        test_kesehatan: kesehatan,
+        nilai_pakar: nilai_pakar,
+        hasil_sistem: nilai_sistem
+    });
+    
+    // Reset form
+    document.getElementById('selectionForm').reset();
+    
+    // Update display
+    updateDisplay();
+});
+
+// Inisialisasi dengan data awal jika belum ada
+function initializeData() {
+    const existing = db.get('fuzzifikasi');
+    if (existing.length === 0) {
+        // Data awal dari database SQL
+        const initialData = [
+            { nama: 'A', test_tulis: 74, test_keterampilan: 75, wawancara: 80, test_kesehatan: 70, nilai_pakar: 75, hasil_sistem: 73 },
+            { nama: 'B', test_tulis: 56, test_keterampilan: 65, wawancara: 75, test_kesehatan: 75, nilai_pakar: 70, hasil_sistem: 47 },
+            { nama: 'C', test_tulis: 65, test_keterampilan: 63, wawancara: 70, test_kesehatan: 80, nilai_pakar: 71, hasil_sistem: 55 },
+            { nama: 'D', test_tulis: 45, test_keterampilan: 55, wawancara: 90, test_kesehatan: 80, nilai_pakar: 73, hasil_sistem: 48 },
+            { nama: 'E', test_tulis: 60, test_keterampilan: 64, wawancara: 80, test_kesehatan: 80, nilai_pakar: 74, hasil_sistem: 49 },
+            { nama: 'F', test_tulis: 58, test_keterampilan: 55, wawancara: 90, test_kesehatan: 40, nilai_pakar: 62, hasil_sistem: 53 },
+            { nama: 'G', test_tulis: 75, test_keterampilan: 75, wawancara: 60, test_kesehatan: 60, nilai_pakar: 65, hasil_sistem: 50 },
+            { nama: 'H', test_tulis: 72, test_keterampilan: 75, wawancara: 60, test_kesehatan: 60, nilai_pakar: 65, hasil_sistem: 52 },
+            { nama: 'I', test_tulis: 71, test_keterampilan: 75, wawancara: 75, test_kesehatan: 70, nilai_pakar: 73, hasil_sistem: 68 },
+            { nama: 'J', test_tulis: 100, test_keterampilan: 80, wawancara: 75, test_kesehatan: 80, nilai_pakar: 82, hasil_sistem: 75 }
+        ];
+        
+        initialData.forEach(item => {
+            db.push('fuzzifikasi', item);
+        });
+    }
+}
+
+// Inisialisasi aplikasi
+initializeData();
+updateDisplay();
+
+</script>
+
+</body>
+</html>
